@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 
 [dependencies]
-ratatui = "0.28.1"        # обновляем до свежей версии
+ratatui = "0.28.1"        
 crossterm = "0.27"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
@@ -12,3 +12,4 @@ humansize = "2.1"
 seahash = "4.1"
 once_cell = "1.19"
 showfile = "0.1"
+url = "2"

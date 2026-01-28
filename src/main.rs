@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use seahash::hash;
 use std::sync::Mutex;
+use url::Url;
 
 static SCANNED_FILES: AtomicU64 = AtomicU64::new(0);
 static CURRENT_PATH: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
@@ -54,10 +55,26 @@ impl Node {
     }
 }
 
-fn open_in_file_manager(path: &std::path::Path) {
-    let uri = format!("file://{}", path.display());
-    showfile::show_uri_in_file_manager(&uri);
+
+fn open_in_file_manager(path: &Path) {
+    #[cfg(target_os = "windows")]
+    {
+
+        if let Ok(url) = Url::from_file_path(path) {
+
+            let _ = showfile::show_uri_in_file_manager(url.as_str());
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+
+        if let Ok(url) = Url::from_file_path(path) {
+            let _ = showfile::show_uri_in_file_manager(url.as_str());
+        }
+    }
 }
+
 
 
 static COLOR_CACHE: Lazy<std::sync::Mutex<HashMap<String, Color>>> = 
