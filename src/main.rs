@@ -25,6 +25,9 @@ use seahash::hash;
 struct Args {
     #[arg(default_value = ".")]
     path: PathBuf,
+
+    #[arg(long)]
+    ignoreos5: bool,
 }
 
 #[derive(Clone)]
@@ -139,16 +142,53 @@ fn dynamic_color(node: &Node, total_size: u64, is_other: bool) -> Color {
     }
 }
 
-fn build_tree(root: &Path) -> Result<Node> {
+fn build_tree(root: &Path, ignore_os5: bool) -> Result<Node> {
     let mut children = Vec::new();
     let mut total_size = 0u64;
     let mut file_count = 0;
     let mut file_total_size = 0u64;
 
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
+    let read_dir = match fs::read_dir(root) {
+        Ok(rd) => rd,
+        Err(e) => {
+            if ignore_os5 && e.kind() == std::io::ErrorKind::PermissionDenied {
+                return Ok(Node {
+                    name: root.file_name().map_or("".to_string(), |s| s.to_string_lossy().into_owned()),
+                    size: 0,
+                    path: root.to_path_buf(),
+                    children: Vec::new(),
+                    is_dir: true,
+                });
+            } else {
+                return Err(e.into());
+            }
+        }
+    };
+
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                if ignore_os5 && e.kind() == std::io::ErrorKind::PermissionDenied {
+                    continue;
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
+
         let path = entry.path();
-        let metadata = entry.metadata()?;
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                if ignore_os5 && e.kind() == std::io::ErrorKind::PermissionDenied {
+                    continue;
+                } else {
+                    return Err(e.into());
+                }
+            }
+        };
 
         if metadata.is_symlink() {
             continue;
@@ -157,7 +197,7 @@ fn build_tree(root: &Path) -> Result<Node> {
         let name = path.file_name().map_or("".to_string(), |s| s.to_string_lossy().into_owned());
 
         if metadata.is_dir() {
-            let child = build_tree(&path)?;
+            let child = build_tree(&path, ignore_os5)?;
             total_size += child.total_size();
             children.push(child);
         } else if metadata.is_file() {
@@ -180,18 +220,17 @@ fn build_tree(root: &Path) -> Result<Node> {
     let threshold = if file_count > 0 {
         let avg_size = file_total_size as f64 / file_count as f64;
         let count_factor = if file_count > 200 {
-            0.001 
+            0.001
         } else if file_count > 50 {
-            0.005 
+            0.005
         } else {
-            0.01  
+            0.01
         };
         let size_based = total_size as f64 * count_factor;
-        let avg_based = avg_size * 0.2; 
-        
-        size_based.max(avg_based).max(1024.0) as u64 
+        let avg_based = avg_size * 0.2;
+        size_based.max(avg_based).max(1024.0) as u64
     } else {
-        u64::MAX 
+        u64::MAX
     };
 
     let mut other_size = 0u64;
@@ -450,7 +489,8 @@ fn main() -> Result<()> {
     let path = args.path.canonicalize()?;
 
     println!("Сканирую директорию...");
-    let root = build_tree(&path)?;
+    let root = build_tree(&path, args.ignoreos5)?;
+
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?.execute(EnableMouseCapture)?;
