@@ -5,6 +5,9 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+
+use crossterm::event::KeyModifiers;
+
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -43,6 +46,11 @@ impl Node {
     fn total_size(&self) -> u64 {
         self.size
     }
+}
+
+fn open_in_file_manager(path: &std::path::Path) {
+    let uri = format!("file://{}", path.display());
+    showfile::show_uri_in_file_manager(&uri);
 }
 
 static COLOR_CACHE: Lazy<std::sync::Mutex<HashMap<String, Color>>> = 
@@ -579,7 +587,11 @@ fn main() -> Result<()> {
                 }
                 MouseEventKind::Down(_) => {
                     if let Some(node) = app.get_node_at(mouse.column, mouse.row) {
-                        if node.is_dir && !node.children.is_empty() {
+                        // проверяем, нажата ли Ctrl
+                        if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                            // открываем в файловом менеджере
+                            open_in_file_manager(&node.path);
+                        } else if node.is_dir && !node.children.is_empty() {
                             app.current_dir = node.path.clone();
                             app.offset_x = 0;
                             app.offset_y = 0;
@@ -587,6 +599,8 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+
+
                 _ => {}
             },
             _ => {}
