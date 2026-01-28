@@ -5,6 +5,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
 use crossterm::event::KeyModifiers;
 
@@ -23,6 +24,11 @@ use humansize::{SizeFormatter, DECIMAL};
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use seahash::hash;
+use std::sync::Mutex;
+
+static SCANNED_FILES: AtomicU64 = AtomicU64::new(0);
+static CURRENT_PATH: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
+
 
 #[derive(Parser)]
 struct Args {
@@ -52,6 +58,7 @@ fn open_in_file_manager(path: &std::path::Path) {
     let uri = format!("file://{}", path.display());
     showfile::show_uri_in_file_manager(&uri);
 }
+
 
 static COLOR_CACHE: Lazy<std::sync::Mutex<HashMap<String, Color>>> = 
     Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
@@ -151,6 +158,10 @@ fn dynamic_color(node: &Node, total_size: u64, is_other: bool) -> Color {
 }
 
 fn build_tree(root: &Path, ignore_os5: bool) -> Result<Node> {
+    {
+        let mut p = CURRENT_PATH.lock().unwrap();
+        *p = root.display().to_string();
+    }
     let mut children = Vec::new();
     let mut total_size = 0u64;
     let mut file_count = 0;
@@ -213,6 +224,9 @@ fn build_tree(root: &Path, ignore_os5: bool) -> Result<Node> {
             total_size += size;
             file_total_size += size;
             file_count += 1;
+
+            SCANNED_FILES.fetch_add(1, Ordering::Relaxed);
+
             children.push(Node {
                 name,
                 size,
@@ -495,10 +509,64 @@ impl App {
 fn main() -> Result<()> {
     let args = Args::parse();
     let path = args.path.canonicalize()?;
+//
+use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-    println!("Сканирую директорию...");
-    let root = build_tree(&path, args.ignoreos5)?;
+println!("Сканирую директорию...");
 
+let done = Arc::new(AtomicBool::new(false));
+let done_flag = done.clone();
+
+let start_time = Instant::now();
+
+// Поток прогресса
+let progress_thread = std::thread::spawn(move || {
+    let mut last_count = 0u64;
+    let mut last_time = Instant::now();
+
+    while !done_flag.load(Ordering::Relaxed) {
+        let count = SCANNED_FILES.load(Ordering::Relaxed);
+
+        let now = Instant::now();
+        let dt = now.duration_since(last_time).as_secs_f64().max(0.001);
+        let speed = (count - last_count) as f64 / dt;
+
+        last_time = now;
+        last_count = count;
+
+        let path = CURRENT_PATH.lock().unwrap().clone();
+
+        print!(
+            "\r📁 {} | 📄 файлов: {} | ⚡ {:.0} файлов/сек        ",
+            path, count, speed
+        );
+
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let total = SCANNED_FILES.load(Ordering::Relaxed);
+    let elapsed = start_time.elapsed().as_secs_f64();
+
+    println!(
+        "\r✅ Готово: {} файлов за {:.1} сек (≈ {:.0} файлов/сек)",
+        total,
+        elapsed,
+        total as f64 / elapsed.max(0.001)
+    );
+});
+
+// Само сканирование
+let root = build_tree(&path, args.ignoreos5)?;
+
+// Сообщаем что всё
+done.store(true, Ordering::Relaxed);
+progress_thread.join().ok();
+
+//
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?.execute(EnableMouseCapture)?;
