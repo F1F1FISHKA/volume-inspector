@@ -3,13 +3,13 @@ name: Build & Release
 on:
   push:
     tags:
-      - 'v*'
-  workflow_dispatch:
+      - 'v*'  # Запускать ТОЛЬКО при создании тега вида v1.0.0
+  # workflow_dispatch убран — релизы создаются только по тегам!
+  # (для теста сборки без релиза можно создать отдельный workflow)
 
 env:
   CARGO_TERM_COLOR: always
-
-  BIN_NAME: volume-inspector
+  BIN_NAME: your-app-name  # ← ЗАМЕНИТЕ НА ИМЯ ИЗ Cargo.toml!
 
 jobs:
   test:
@@ -85,7 +85,7 @@ jobs:
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # Обязательно для создания релиза!
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -96,7 +96,10 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          tag_name: ${{ github.ref_name }}  # ← КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: берём имя тега из события
+          files: |
+            dist/linux-binary/*.tar.gz
+            dist/windows-binary/*.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
