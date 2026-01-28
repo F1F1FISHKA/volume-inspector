@@ -1,0 +1,124 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+  BIN_NAME: volume-inspector
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --all
+
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install musl & upx
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools upx-ucl
+          # Для ARM64 кросс-компиляции
+          [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ] && sudo apt install -y gcc-aarch64-linux-gnu || true
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/${{ env.BIN_NAME }} ./${{ env.BIN_NAME }}-linux-${{ matrix.target }}
+
+      - name: Compress with UPX
+        run: upx --best ./${{ env.BIN_NAME }}-linux-${{ matrix.target }}
+
+      - name: Create archive
+        run: tar -czf ${{ env.BIN_NAME }}-linux-${{ matrix.target }}.tar.gz ./${{ env.BIN_NAME }}-linux-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-linux-${{ matrix.target }}
+          path: ${{ env.BIN_NAME }}-linux-${{ matrix.target }}.tar.gz
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install UPX
+        run: choco install upx -y
+        shell: pwsh
+
+      - name: Build
+        run: |
+          if ("${{ matrix.target }}" -eq "x86_64") {
+            cargo build --release
+            Copy-Item "target/release/${{ env.BIN_NAME }}.exe" "./${{ env.BIN_NAME }}-windows-x86_64.exe"
+          } else {
+            rustup target add aarch64-pc-windows-msvc
+            cargo build --release --target aarch64-pc-windows-msvc
+            Copy-Item "target/aarch64-pc-windows-msvc/release/${{ env.BIN_NAME }}.exe" "./${{ env.BIN_NAME }}-windows-aarch64.exe"
+          }
+        shell: pwsh
+
+      - name: Compress with UPX
+        run: |
+          if ("${{ matrix.target }}" -eq "x86_64") {
+            upx --best "${{ env.BIN_NAME }}-windows-x86_64.exe"
+          } else {
+            upx --best "${{ env.BIN_NAME }}-windows-aarch64.exe"
+          }
+        shell: pwsh
+
+      - name: Create ZIP
+        run: |
+          if ("${{ matrix.target }}" -eq "x86_64") {
+            Compress-Archive -Path "${{ env.BIN_NAME }}-windows-x86_64.exe" -DestinationPath "${{ env.BIN_NAME }}-windows-x86_64.zip"
+          } else {
+            Compress-Archive -Path "${{ env.BIN_NAME }}-windows-aarch64.exe" -DestinationPath "${{ env.BIN_NAME }}-windows-aarch64.zip"
+          }
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN_NAME }}-windows-${{ matrix.target }}
+          path: ${{ env.BIN_NAME }}-windows-${{ matrix.target }}.zip
+
+  release:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: List artifacts
+        run: find dist -type f
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
