@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use humansize::{SizeFormatter, DECIMAL};
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
+use seahash::hash;
 
 #[derive(Parser)]
 struct Args {
@@ -44,16 +45,13 @@ impl Node {
 static COLOR_CACHE: Lazy<std::sync::Mutex<HashMap<String, Color>>> = 
     Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
-
-
-
 fn color_for_extension(ext: Option<&str>) -> Color {
     let ext = ext.unwrap_or("").to_lowercase();
     if ext.is_empty() {
         return Color::Rgb(150, 150, 150);
     }
 
-    // Берём из кэша или генерируем новый цвет
+
     {
         let cache = COLOR_CACHE.lock().unwrap();
         if let Some(color) = cache.get(&ext) {
@@ -61,18 +59,17 @@ fn color_for_extension(ext: Option<&str>) -> Color {
         }
     }
 
-    // Генерируем цвет на основе хеша расширения
-    let hash = seahash::hash(ext.as_bytes());
+
+    let hash = hash(ext.as_bytes());
     
-    // Преобразуем хеш в приятный цвет в цветовом пространстве HSL
-    // Используем разные биты хеша для разных компонент
+
     let hue = ((hash >> 32) % 360) as f64;
-    let saturation = 0.65 + ((hash >> 16) % 15) as f64 * 0.02; // 65-95%
-    let lightness = 0.55 + ((hash >> 8) % 15) as f64 * 0.02;  // 55-85%
+    let saturation = 0.65 + ((hash >> 16) % 15) as f64 * 0.02;
+    let lightness = 0.55 + ((hash >> 8) % 15) as f64 * 0.02;  
     
     let (r, g, b) = hsl_to_rgb(hue, saturation, lightness);
     
-    // Сохраняем в кэш
+
     {
         let mut cache = COLOR_CACHE.lock().unwrap();
         cache.insert(ext, Color::Rgb(r, g, b));
@@ -81,7 +78,6 @@ fn color_for_extension(ext: Option<&str>) -> Color {
     Color::Rgb(r, g, b)
 }
 
-// Конвертация HSL -> RGB (возвращает значения 0-255)
 fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
@@ -107,6 +103,7 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     
     (r, g, b)
 }
+
 fn dynamic_color(node: &Node, total_size: u64, is_other: bool) -> Color {
     if total_size == 0 {
         return Color::DarkGray;
@@ -116,27 +113,22 @@ fn dynamic_color(node: &Node, total_size: u64, is_other: bool) -> Color {
     let brightness = (90.0 + 165.0 * norm) as u8;
 
     if is_other {
-        // Серый цвет с оттенком в зависимости от размера "Прочего"
         let gray = brightness.saturating_sub(30).clamp(60, 180);
         return Color::Rgb(gray, gray, gray);
     }
 
     if node.is_dir {
-        // Для директорий — сине-зелёная палитра
         let r = (brightness / 4) as u8;
         let g = (brightness * 2 / 3) as u8;
         let b = (brightness * 3 / 4 + 40) as u8;
         return Color::Rgb(r.clamp(30, 120), g.clamp(100, 220), b.clamp(120, 255));
     }
 
-    // Для файлов — используем цвет расширения с насыщенностью в зависимости от размера
     let base = color_for_extension(node.path.extension().and_then(|s| s.to_str()));
     if let Color::Rgb(r, g, b) = base {
-        // Увеличиваем насыщенность для крупных файлов
         let factor = 0.6 + norm * 0.8;
         let avg = (r as f64 + g as f64 + b as f64) / 3.0;
         
-        // Сдвигаем цвет к более насыщенному, сохраняя оттенок
         let r_new = (r as f64 + (r as f64 - avg) * factor).clamp(60.0, 255.0) as u8;
         let g_new = (g as f64 + (g as f64 - avg) * factor).clamp(60.0, 255.0) as u8;
         let b_new = (b as f64 + (b as f64 - avg) * factor).clamp(60.0, 255.0) as u8;
@@ -146,6 +138,7 @@ fn dynamic_color(node: &Node, total_size: u64, is_other: bool) -> Color {
         Color::Rgb(brightness, brightness, brightness)
     }
 }
+
 fn build_tree(root: &Path) -> Result<Node> {
     let mut children = Vec::new();
     let mut total_size = 0u64;
@@ -184,7 +177,6 @@ fn build_tree(root: &Path) -> Result<Node> {
 
     children.sort_by_key(|c| std::cmp::Reverse(c.total_size()));
 
-
     let threshold = if file_count > 0 {
         let avg_size = file_total_size as f64 / file_count as f64;
         let count_factor = if file_count > 200 {
@@ -206,7 +198,6 @@ fn build_tree(root: &Path) -> Result<Node> {
     let mut filtered = Vec::new();
 
     for child in children {
-
         if !child.is_dir && child.size < threshold {
             other_size += child.size;
         } else {
@@ -234,6 +225,7 @@ fn build_tree(root: &Path) -> Result<Node> {
         is_dir: true,
     })
 }
+
 fn layout_tree<'a>(node: &'a Node, area: Rect, horizontal: bool) -> Vec<(Rect, &'a Node)> {
     if node.children.is_empty() || area.width < 3 || area.height < 3 {
         return vec![(area, node)];
@@ -248,17 +240,14 @@ fn layout_tree<'a>(node: &'a Node, area: Rect, horizontal: bool) -> Vec<(Rect, &
         return vec![(area, node)];
     }
 
-
     let primary_dim = if horizontal { area.width as f64 } else { area.height as f64 };
-    let mut sizes: Vec<f64> = children.iter()
+    let sizes: Vec<f64> = children.iter()
         .map(|c| (c.size as f64 / total) * primary_dim)
         .collect();
-
 
     let mut integer_sizes: Vec<u16> = sizes.iter().map(|&v| v.floor() as u16).collect();
     let allocated: u16 = integer_sizes.iter().sum();
     let remainder = primary_dim as u16 - allocated;
-
 
     let mut fractional: Vec<(usize, f64)> = sizes.iter()
         .enumerate()
@@ -285,7 +274,6 @@ fn layout_tree<'a>(node: &'a Node, area: Rect, horizontal: bool) -> Vec<(Rect, &
         if size_primary == 0 {
             continue;
         }
-
 
         let available = if horizontal {
             area.right().saturating_sub(current_pos)
@@ -336,16 +324,35 @@ fn layout_tree<'a>(node: &'a Node, area: Rect, horizontal: bool) -> Vec<(Rect, &
 
     result
 }
+
+fn clip_rect(rect: Rect, area: Rect) -> Option<Rect> {
+    let x1 = rect.x.max(area.x);
+    let y1 = rect.y.max(area.y);
+    let x2 = (rect.x + rect.width).min(area.x + area.width);
+    let y2 = (rect.y + rect.height).min(area.y + area.height);
+    
+    if x1 < x2 && y1 < y2 {
+        Some(Rect {
+            x: x1,
+            y: y1,
+            width: x2 - x1,
+            height: y2 - y1,
+        })
+    } else {
+        None
+    }
+}
+
 struct App {
     root: Node,
     layout: Vec<(Rect, Node)>,
+    layout_dirty: bool,
+    last_area_size: (u16, u16),
     selected: Option<PathBuf>,
     current_dir: PathBuf,
     mouse_pos: (u16, u16),
-
-    offset_x: u16,  
-    offset_y: u16,  
-
+    offset_x: u16,
+    offset_y: u16,
     scroll_mode: bool,
 }
 
@@ -355,12 +362,14 @@ impl App {
         App {
             root,
             layout: Vec::new(),
+            layout_dirty: true,
+            last_area_size: (0, 0),
             selected: None,
             current_dir,
             mouse_pos: (0, 0),
             offset_x: 0,
             offset_y: 0,
-            scroll_mode: false, 
+            scroll_mode: false,
         }
     }
 
@@ -383,7 +392,56 @@ impl App {
     }
 
     fn get_node_at(&self, x: u16, y: u16) -> Option<&Node> {
-        self.layout.iter().find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y })).map(|(_, node)| node)
+        self.layout.iter()
+            .find(|(rect, _)| {
+                let rx = rect.x as i32 - self.offset_x as i32;
+                let ry = rect.y as i32 - self.offset_y as i32;
+                let rw = rect.width as i32;
+                let rh = rect.height as i32;
+                (x as i32) >= rx && (x as i32) < rx + rw && 
+                (y as i32) >= ry && (y as i32) < ry + rh
+            })
+            .map(|(_, node)| node)
+    }
+
+    fn ensure_layout(&mut self, area: Rect) {
+        let area_size = (area.width, area.height);
+        let new_scroll_mode = area.width < 40 || area.height < 20;
+        
+        if self.layout_dirty 
+            || self.last_area_size != area_size 
+            || self.scroll_mode != new_scroll_mode 
+        {
+            self.recalculate_layout(area);
+            self.last_area_size = area_size;
+            self.scroll_mode = new_scroll_mode;
+            self.layout_dirty = false;
+        }
+    }
+
+    fn recalculate_layout(&mut self, area: Rect) {
+        let current_node = self.find_node(&self.current_dir).unwrap_or(&self.root);
+        let total_size = current_node.size;
+
+        let layout_area = if self.scroll_mode {
+            let node_count = current_node.children.len() as u16;
+            let base_size = 200u16;
+            let dynamic_size = (base_size + node_count * 5).min(5000);
+            
+            Rect {
+                x: 0,
+                y: 0,
+                width: dynamic_size,
+                height: dynamic_size,
+            }
+        } else {
+            area
+        };
+
+        self.layout = layout_tree(current_node, layout_area, true)
+            .into_iter()
+            .map(|(r, n)| (r, n.clone()))
+            .collect();
     }
 }
 
@@ -402,9 +460,17 @@ fn main() -> Result<()> {
     let mut app = App::new(root);
 
     loop {
+            //small optimizxcoDSAFNLKKLM'DBCVL;M
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        app.ensure_layout(area);
+        
         terminal.draw(|f| ui(f, &mut app))?;
 
         match event::read()? {
+            Event::Resize(_, _) => {
+                app.layout_dirty = true;
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Enter => {
@@ -412,9 +478,9 @@ fn main() -> Result<()> {
                         if let Some(node) = app.find_node(selected) {
                             if node.is_dir && !node.children.is_empty() {
                                 app.current_dir = node.path.clone();
-
                                 app.offset_x = 0;
                                 app.offset_y = 0;
+                                app.layout_dirty = true;
                             }
                         }
                     }
@@ -426,6 +492,7 @@ fn main() -> Result<()> {
                         app.current_dir = parent.to_path_buf();
                         app.offset_x = 0;
                         app.offset_y = 0;
+                        app.layout_dirty = true;
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
@@ -443,7 +510,6 @@ fn main() -> Result<()> {
                         app.offset_y = app.offset_y.saturating_add(3);
                     }
                 }
-
                 KeyCode::Char('H') => {
                     if app.scroll_mode {
                         app.offset_x = app.offset_x.saturating_sub(20);
@@ -477,6 +543,7 @@ fn main() -> Result<()> {
                             app.current_dir = node.path.clone();
                             app.offset_x = 0;
                             app.offset_y = 0;
+                            app.layout_dirty = true;
                         }
                     }
                 }
@@ -491,26 +558,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-
-fn clip_rect(rect: Rect, area: Rect) -> Option<Rect> {
-    let x1 = rect.x.max(area.x);
-    let y1 = rect.y.max(area.y);
-    let x2 = (rect.x + rect.width).min(area.x + area.width);
-    let y2 = (rect.y + rect.height).min(area.y + area.height);
-    
-    if x1 < x2 && y1 < y2 {
-        Some(Rect {
-            x: x1,
-            y: y1,
-            width: x2 - x1,
-            height: y2 - y1,
-        })
-    } else {
-        None
-    }
-}
-
-
 fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -519,50 +566,37 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     let main_area = chunks[0];
     let status_area = chunks[1];
-    
 
-    app.scroll_mode = main_area.width < 40 || main_area.height < 20;
+    let current_node = app.find_node(&app.current_dir).unwrap_or(&app.root);
+    let total_size = current_node.size;
+    let current_name = current_node.name.clone();
 
-    let (total_size, current_name, layout_items): (u64, String, Vec<(Rect, Node)>);
-
-    {
-        let current_node = app.find_node(&app.current_dir).unwrap_or(&app.root);
-        total_size = current_node.size;
-        current_name = current_node.name.clone();
-
-
-        let layout_area = if app.scroll_mode {
-           
-            Rect {
-                x: 0,
-                y: 0,
-                width: 200,
-                height: 200,
-            }
-        } else {
-            main_area
-        };
-
-        layout_items = layout_tree(current_node, layout_area, true)
-            .into_iter()
-            .map(|(r, n)| (r, n.clone()))
-            .collect();
-    }
-
-    app.layout = layout_items;
-
+    // another optimization
     for (rect, node) in &app.layout {
+
+        let screen_x = rect.x as i32 - app.offset_x as i32;
+        let screen_y = rect.y as i32 - app.offset_y as i32;
+        let screen_right = screen_x + rect.width as i32;
+        let screen_bottom = screen_y + rect.height as i32;
+        
+        let view_right = main_area.x as i32 + main_area.width as i32;
+        let view_bottom = main_area.y as i32 + main_area.height as i32;
+        
+        if screen_right < main_area.x as i32 || screen_x >= view_right || 
+           screen_bottom < main_area.y as i32 || screen_y >= view_bottom {
+            continue; 
+        }
 
         let mut draw_rect = *rect;
         if app.scroll_mode {
-
             draw_rect.x = draw_rect.x.saturating_sub(app.offset_x);
             draw_rect.y = draw_rect.y.saturating_sub(app.offset_y);
         }
 
-
         if let Some(clipped_rect) = clip_rect(draw_rect, main_area) {
             let is_selected = app.selected.as_ref().map_or(false, |p| p == &node.path);
+            let is_other = node.name == "Прочее";
+            let bg_color = dynamic_color(node, total_size, is_other);
 
             let border_style = if is_selected {
                 Style::default().fg(Color::Yellow)
@@ -574,8 +608,6 @@ fn ui(f: &mut Frame, app: &mut App) {
                 .borders(Borders::ALL)
                 .border_style(border_style)
                 .border_type(ratatui::widgets::BorderType::Rounded);
-
-            let bg_color = dynamic_color(node, total_size, node.name == "Прочее");
 
             let text = if clipped_rect.width > 12 && clipped_rect.height > 4 {
                 let size_str = if node.size < 1024 {
@@ -599,7 +631,6 @@ fn ui(f: &mut Frame, app: &mut App) {
             f.render_widget(paragraph, clipped_rect);
         }
     }
-
 
     let mut status_lines = if let Some(selected_path) = &app.selected {
         if let Some(node) = app.get_node_at(app.mouse_pos.0, app.mouse_pos.1) {
@@ -631,10 +662,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         ]
     };
 
-
     if app.scroll_mode {
         let scroll_hint = format!(
-            "←/→/↑/↓: прокрутка | H/L: быстрая прокрутка | Текущее смещение: {}, {}",
+            "←/→/↑/↓: прокрутка | H/L: быстрая прокрутка | Смещение: {}, {}",
             app.offset_x, app.offset_y
         );
         status_lines.push(Line::from(scroll_hint).style(Style::default().fg(Color::Yellow)));
