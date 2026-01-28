@@ -17,6 +17,8 @@ use std::fs;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
 use humansize::{SizeFormatter, DECIMAL};
+use std::collections::HashMap;
+use once_cell::sync::Lazy;
 
 #[derive(Parser)]
 struct Args {
@@ -39,50 +41,111 @@ impl Node {
     }
 }
 
+static COLOR_CACHE: Lazy<std::sync::Mutex<HashMap<String, Color>>> = 
+    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+
+
+
 fn color_for_extension(ext: Option<&str>) -> Color {
-    match ext {
-        Some("rs") => Color::Rgb(100, 150, 255),
-        Some("py") => Color::Rgb(255, 200, 100),
-        Some("js") | Some("ts") => Color::Rgb(200, 100, 200),
-        Some("go") => Color::Rgb(100, 255, 100),
-        Some("cpp") | Some("h") | Some("c") => Color::Rgb(100, 255, 255),
-        Some("md") | Some("txt") => Color::Rgb(220, 220, 220),
-        Some("json") | Some("toml") => Color::Rgb(255, 100, 100),
-        Some("jpg") | Some("png") => Color::Rgb(100, 200, 255),
-        _ => Color::Rgb(150, 150, 150),
+    let ext = ext.unwrap_or("").to_lowercase();
+    if ext.is_empty() {
+        return Color::Rgb(150, 150, 150);
     }
+
+    // Берём из кэша или генерируем новый цвет
+    {
+        let cache = COLOR_CACHE.lock().unwrap();
+        if let Some(color) = cache.get(&ext) {
+            return *color;
+        }
+    }
+
+    // Генерируем цвет на основе хеша расширения
+    let hash = seahash::hash(ext.as_bytes());
+    
+    // Преобразуем хеш в приятный цвет в цветовом пространстве HSL
+    // Используем разные биты хеша для разных компонент
+    let hue = ((hash >> 32) % 360) as f64;
+    let saturation = 0.65 + ((hash >> 16) % 15) as f64 * 0.02; // 65-95%
+    let lightness = 0.55 + ((hash >> 8) % 15) as f64 * 0.02;  // 55-85%
+    
+    let (r, g, b) = hsl_to_rgb(hue, saturation, lightness);
+    
+    // Сохраняем в кэш
+    {
+        let mut cache = COLOR_CACHE.lock().unwrap();
+        cache.insert(ext, Color::Rgb(r, g, b));
+    }
+    
+    Color::Rgb(r, g, b)
 }
 
+// Конвертация HSL -> RGB (возвращает значения 0-255)
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    
+    let (rp, gp, bp) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    
+    let r = ((rp + m) * 255.0).clamp(0.0, 255.0) as u8;
+    let g = ((gp + m) * 255.0).clamp(0.0, 255.0) as u8;
+    let b = ((bp + m) * 255.0).clamp(0.0, 255.0) as u8;
+    
+    (r, g, b)
+}
 fn dynamic_color(node: &Node, total_size: u64, is_other: bool) -> Color {
     if total_size == 0 {
         return Color::DarkGray;
     }
+    
     let norm = (node.size as f64 / total_size as f64).sqrt();
-    let brightness = (80.0 + 175.0 * norm) as u8;
+    let brightness = (90.0 + 165.0 * norm) as u8;
 
     if is_other {
-        return Color::Rgb(brightness / 2, brightness / 2, brightness / 2);
-    }
-    if node.is_dir {
-        let r = (brightness / 3) as u8;
-        let g = (brightness * 2 / 3 + 50) as u8;
-        let b = (brightness / 2 + 100) as u8;
-        return Color::Rgb(r.clamp(40, 150), g.clamp(80, 220), b.clamp(100, 255));
+        // Серый цвет с оттенком в зависимости от размера "Прочего"
+        let gray = brightness.saturating_sub(30).clamp(60, 180);
+        return Color::Rgb(gray, gray, gray);
     }
 
+    if node.is_dir {
+        // Для директорий — сине-зелёная палитра
+        let r = (brightness / 4) as u8;
+        let g = (brightness * 2 / 3) as u8;
+        let b = (brightness * 3 / 4 + 40) as u8;
+        return Color::Rgb(r.clamp(30, 120), g.clamp(100, 220), b.clamp(120, 255));
+    }
+
+    // Для файлов — используем цвет расширения с насыщенностью в зависимости от размера
     let base = color_for_extension(node.path.extension().and_then(|s| s.to_str()));
     if let Color::Rgb(r, g, b) = base {
-        let factor = norm * 1.5;
-        Color::Rgb(
-            (r as f64 * factor).clamp(50.0, 255.0) as u8,
-            (g as f64 * factor).clamp(50.0, 255.0) as u8,
-            (b as f64 * factor).clamp(50.0, 255.0) as u8,
-        )
+        // Увеличиваем насыщенность для крупных файлов
+        let factor = 0.6 + norm * 0.8;
+        let avg = (r as f64 + g as f64 + b as f64) / 3.0;
+        
+        // Сдвигаем цвет к более насыщенному, сохраняя оттенок
+        let r_new = (r as f64 + (r as f64 - avg) * factor).clamp(60.0, 255.0) as u8;
+        let g_new = (g as f64 + (g as f64 - avg) * factor).clamp(60.0, 255.0) as u8;
+        let b_new = (b as f64 + (b as f64 - avg) * factor).clamp(60.0, 255.0) as u8;
+        
+        Color::Rgb(r_new, g_new, b_new)
     } else {
         Color::Rgb(brightness, brightness, brightness)
     }
 }
-
 fn build_tree(root: &Path) -> Result<Node> {
     let mut children = Vec::new();
     let mut total_size = 0u64;
